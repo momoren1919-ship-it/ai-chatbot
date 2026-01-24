@@ -37,7 +37,7 @@ cp .env.example .env.local
 - `AUTH_SECRET`  
   例: `openssl rand -base64 32` で生成
 - `AI_GATEWAY_API_KEY`  
-  Vercel 以外の環境で AI Gateway を使う場合に必要 (ローカル開発では必須)
+  Vercel 以外の環境で AI Gateway を使う場合に必要
 - `POSTGRES_URL`  
   DB 接続文字列
 - `REDIS_URL`  
@@ -46,20 +46,6 @@ cp .env.example .env.local
   Vercel Blob 用トークン
 
 注意: `.env.local` はコミットしないでください。
-
-#### 2.3.1 Vercel AI Gateway APIキーの設定 (現段階の方針)
-現時点では Vercel AI Gateway を使用し、無料枠を使い切り次第、会社の OpenAI/Anthropic APIキーへの切り替えを検討します。
-切り替え時は `lib/ai/providers.ts` の実装変更が必要です。
-
-**APIキー設定手順 (ローカル)**
-1. Vercel ダッシュボードを開く
-2. `AI Gateway` で APIキーを作成
-3. 発行されたキーを `.env.local` の `AI_GATEWAY_API_KEY` に設定
-4. `pnpm dev` を再起動
-
-**注意**
-- AI Gateway はアカウントに有効なクレジットカードが無いと 403 を返す場合があります。
-- Vercel にデプロイする場合は OIDC による自動認証が使われます (APIキー不要)。
 
 ### 2.4 DB マイグレーション
 ```bash
@@ -109,18 +95,6 @@ pnpm dev
 - 停止していた開発サーバを同じコマンドで再起動します。
 - すでに別プロセスが同じポート(3000)を使用中の場合は、先に停止してから実行します。
 
-#### 2.5.4 LLM疎通確認 (完了)
-- 前提: `.env.local` の `AI_GATEWAY_API_KEY` を設定済みで、Vercel AI Gatewayが利用可能になっていること。
-- ブラウザでチャット画面を開き、メッセージを送信します。
-- 返答が表示されればLLM呼び出し成功です。
-- サーバログで `POST /api/chat 200` が出ており、`GatewayInternalServerError` が出ていないことを確認します。
-
-#### 2.5.5 現時点の完了内容 (記録)
-- 依存関係のインストール完了 (`pnpm install`)
-- DBマイグレーション完了 (`pnpm db:migrate`、`POSTGRES_URL` 設定済み)
-- 開発サーバ起動完了 (`pnpm dev`)
-- LLM応答の表示確認 (Vercel AI Gateway経由)
-
 ## 3. プロジェクト構成の把握
 
 ### 3.1 主要ディレクトリ
@@ -147,25 +121,6 @@ pnpm dev
 - DB クエリ: `lib/db/queries.ts`
 - AI プロンプト: `lib/ai/prompts.ts`
 - AI モデル/プロバイダ: `lib/ai/models.ts`, `lib/ai/providers.ts`
-
-### 3.3 POST / GET の例 (今回の実装)
-
-#### POST の例: チャット送信
-- エンドポイント: `POST /api/chat`
-- 実装ファイル: `app/(chat)/api/chat/route.ts`
-- 目的: ユーザーのメッセージを受け取り、LLMの返答をストリーミングで返す
-- 例: ブラウザで送信すると `POST /api/chat 200` がログに出る
-
-#### GET の例: 履歴取得 / 投票取得
-- エンドポイント: `GET /api/history?limit=20`
-- 実装ファイル: `app/(chat)/api/history/route.ts`
-- 目的: ログイン中ユーザーのチャット履歴を取得
-- 例: 管理ログに `GET /api/history?limit=20 200`
-
-- エンドポイント: `GET /api/vote?chatId=...`
-- 実装ファイル: `app/(chat)/api/vote/route.ts`
-- 目的: 特定チャットの投票情報を取得
-- 例: 管理ログに `GET /api/vote?chatId=... 200`
 
 ## 4. 実装の流れ (機能追加の手順)
 
@@ -234,12 +189,44 @@ pnpm lint        # 静的解析
 pnpm format      # フォーマット
 ```
 
-## 6. つまずきやすいポイント
+## 6. Difyワークフロー専用モード
+
+### 6.1 概要
+- `/dify` を入口にした専用チャットモードを追加
+- `rule_ver5.md` を system prompt に組み込み、DSL生成の対話フローを実行
+- Difyモードではツール呼び出しを無効化（チャット出力のみ）
+
+### 6.2 実装ファイル
+- ルート/ページ
+  - `app/dify/layout.tsx` (SidebarProvider + DataStreamProvider)
+  - `app/dify/page.tsx` (新規チャット)
+  - `app/dify/chat/[id]/page.tsx` (既存チャット)
+- プロンプト/API
+  - `lib/ai/prompts.ts` (systemPromptIdと`rule_ver5.md`の合成)
+  - `app/(chat)/api/chat/schema.ts` (`systemPromptId` 追加)
+  - `app/(chat)/api/chat/route.ts` (Difyモード時のプロンプト切り替え/ツール無効化)
+- UI
+  - `components/chat.tsx` (systemPromptId / chatPathPrefix / newChatPath / inputPlaceholder)
+  - `components/multimodal-input.tsx` (送信後URLとplaceholder)
+  - `components/chat-header.tsx` (New Chat遷移先)
+
+### 6.3 使い方 (確認ポイント)
+1. `http://localhost:3000/dify` を開く
+2. 入力欄のプレースホルダが専用文言に変わっているか確認
+3. DevToolsのNetworkで `/api/chat` のリクエストボディに
+   `systemPromptId: "dify-rule-ver5"` が含まれることを確認
+
+### 6.4 注意点
+- `app/(group)` はURLに反映されないため、Difyは `app/dify` を使用
+- サイドバーの履歴リンクは `/chat/<id>` のまま（通常チャットと履歴は共有）
+  - Dify専用履歴や `/dify/chat/<id>` へのリンク分離が必要なら別対応
+
+## 7. つまずきやすいポイント
 - `.env.local` の値が不足していると起動やAI機能が失敗する
 - `POSTGRES_URL` が無いとマイグレーションに失敗する
 - pnpm のバージョン不一致で依存関係が崩れることがある
 
-## 7. 次にやることの例
+## 8. 次にやることの例
 - 目的の画面とデータ構造を書き出す
 - 必要なページ/API/DB変更を洗い出す
 - 4章の順に実装する
