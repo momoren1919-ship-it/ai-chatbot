@@ -195,6 +195,7 @@ pnpm format      # フォーマット
 - `/dify` を入口にした専用チャットモードを追加
 - `rule_ver5.md` を system prompt に組み込み、DSL生成の対話フローを実行
 - Difyモードではツール呼び出しを無効化（チャット出力のみ）
+- 生成したDSL（```yaml```コードブロック）はDBへ自動保存
 
 ### 6.2 実装ファイル
 - ルート/ページ
@@ -205,6 +206,10 @@ pnpm format      # フォーマット
   - `lib/ai/prompts.ts` (systemPromptIdと`rule_ver5.md`の合成)
   - `app/(chat)/api/chat/schema.ts` (`systemPromptId` 追加)
   - `app/(chat)/api/chat/route.ts` (Difyモード時のプロンプト切り替え/ツール無効化)
+- DB
+  - `lib/db/schema.ts` (`DifyWorkflowDsl` テーブル)
+  - `lib/db/queries.ts` (`saveDifyWorkflowDsl`)
+  - `lib/db/migrations/0009_dify_workflow_dsl.sql`（マイグレーション）
 - UI
   - `components/chat.tsx` (systemPromptId / chatPathPrefix / newChatPath / inputPlaceholder)
   - `components/multimodal-input.tsx` (送信後URLとplaceholder)
@@ -216,10 +221,35 @@ pnpm format      # フォーマット
 3. DevToolsのNetworkで `/api/chat` のリクエストボディに
    `systemPromptId: "dify-rule-ver5"` が含まれることを確認
 
+### 6.3.1 URL一覧
+- 新規開始（Difyモード）: `http://localhost:3000/dify`
+- 既存チャット（Difyモード）: `http://localhost:3000/dify/chat/<chatId>`
+- 注意: `/dify/chat`（id無し）は未実装のため 404
+
+### 6.3.2 DSL保存の確認方法（Neon）
+NeonのSQL Editorで以下を実行して確認します。
+
+```sql
+select *
+from "DifyWorkflowDsl"
+order by "createdAt" desc
+limit 20;
+```
+
+特定チャットの履歴を見る場合は `<CHAT_ID>` を置き換えます。
+
+```sql
+select *
+from "DifyWorkflowDsl"
+where "chatId" = '<CHAT_ID>'
+order by "version" asc;
+```
+
 ### 6.4 注意点
 - `app/(group)` はURLに反映されないため、Difyは `app/dify` を使用
 - サイドバーの履歴リンクは `/chat/<id>` のまま（通常チャットと履歴は共有）
   - Dify専用履歴や `/dify/chat/<id>` へのリンク分離が必要なら別対応
+- `pnpm db:migrate` が通っていないとテーブルが作成されないため、DSL自動保存も動作しない
 
 ## 7. つまずきやすいポイント
 - `.env.local` の値が不足していると起動やAI機能が失敗する

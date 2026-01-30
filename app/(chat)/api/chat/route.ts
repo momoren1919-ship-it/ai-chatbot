@@ -24,6 +24,7 @@ import {
   getChatById,
   getMessageCountByUserId,
   getMessagesByChatId,
+  saveDifyWorkflowDsl,
   saveChat,
   saveMessages,
   updateChatTitleById,
@@ -59,14 +60,14 @@ export async function POST(request: Request) {
   }
 
   try {
-  const {
-    id,
-    message,
-    messages,
-    selectedChatModel,
-    selectedVisibilityType,
-    systemPromptId,
-  } = requestBody;
+    const {
+      id,
+      message,
+      messages,
+      selectedChatModel,
+      selectedVisibilityType,
+      systemPromptId,
+    } = requestBody;
 
     const session = await auth();
 
@@ -195,6 +196,8 @@ export async function POST(request: Request) {
       },
       generateId: generateUUID,
       onFinish: async ({ messages: finishedMessages }) => {
+        const isDifyMode = systemPromptId === "dify-rule-ver5";
+
         if (isToolApprovalFlow) {
           for (const finishedMsg of finishedMessages) {
             const existingMsg = uiMessages.find((m) => m.id === finishedMsg.id);
@@ -229,6 +232,78 @@ export async function POST(request: Request) {
               chatId: id,
             })),
           });
+
+          if (isDifyMode && session?.user?.id) {
+            // Save the latest generated DSL (YAML fenced block) as a separate record.
+            const latestAssistant = [...finishedMessages]
+              .reverse()
+              .find((m) => m.role === "assistant");
+
+            const extractTextFromParts = (parts: unknown[]): string => {
+              return parts
+                .filter(
+                  (p): p is { type: "text"; text: string } =>
+                    typeof p === "object" &&
+                    p !== null &&
+                    "type" in p &&
+                    (p as { type?: unknown }).type === "text" &&
+                    "text" in p &&
+                    typeof (p as { text?: unknown }).text === "string"
+                )
+                .map((p) => p.text)
+                .join("");
+            };
+
+            const extractYamlCodeBlock = (text: string): string | null => {
+              const matches = [
+                ...text.matchAll(/```(?:ya?ml)?\s*([\s\S]*?)```/gi),
+              ];
+              const last = matches.at(-1);
+              const yaml = last?.[1]?.trim();
+              return yaml ? yaml : null;
+            };
+
+            const inferMode = (yaml: string) => {
+              const match = yaml.match(
+                /(^|\n)\s*mode:\s*(advanced-chat|workflow|agent-chat)\b/i
+              );
+              return (match?.[2]?.toLowerCase() as
+                | "advanced-chat"
+                | "workflow"
+                | "agent-chat"
+                | undefined) ?? null;
+            };
+
+            const inferWorkflowName = (yaml: string) => {
+              // Heuristic: prefer "name:" near the top.
+              const head = yaml.split("\n").slice(0, 60).join("\n");
+              const match =
+                head.match(/(^|\n)\s*name:\s*['"]?([^'"\n]+)['"]?/i) ??
+                head.match(
+                  /(^|\n)\s*app:\s*\n\s+name:\s*['"]?([^'"\n]+)['"]?/i
+                );
+              return match?.[2]?.trim() ?? null;
+            };
+
+            if (latestAssistant?.parts) {
+              const text = extractTextFromParts(latestAssistant.parts as unknown[]);
+              const yaml = extractYamlCodeBlock(text);
+              if (yaml) {
+                try {
+                  await saveDifyWorkflowDsl({
+                    chatId: id,
+                    userId: session.user.id,
+                    messageId: latestAssistant.id,
+                    dslYaml: yaml,
+                    workflowName: inferWorkflowName(yaml),
+                    mode: inferMode(yaml),
+                  });
+                } catch {
+                  // Don't fail the chat if DSL persistence fails (e.g. migrations not applied yet).
+                }
+              }
+            }
+          }
         }
       },
       onError: () => "Oops, an error occurred!",

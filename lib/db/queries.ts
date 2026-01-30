@@ -10,6 +10,7 @@ import {
   gte,
   inArray,
   lt,
+  sql,
   type SQL,
 } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -22,6 +23,7 @@ import {
   type Chat,
   chat,
   type DBMessage,
+  difyWorkflowDsl,
   document,
   message,
   type Suggestion,
@@ -239,6 +241,50 @@ export async function getChatById({ id }: { id: string }) {
     return selectedChat;
   } catch (_error) {
     throw new ChatSDKError("bad_request:database", "Failed to get chat by id");
+  }
+}
+
+export async function saveDifyWorkflowDsl({
+  chatId,
+  userId,
+  messageId,
+  dslYaml,
+  workflowName,
+  mode,
+}: {
+  chatId: string;
+  userId: string;
+  messageId?: string | null;
+  dslYaml: string;
+  workflowName?: string | null;
+  mode?: "advanced-chat" | "workflow" | "agent-chat" | null;
+}) {
+  try {
+    const [{ nextVersion }] = await db
+      .select({
+        nextVersion: sql<number>`coalesce(max(${difyWorkflowDsl.version}), 0) + 1`,
+      })
+      .from(difyWorkflowDsl)
+      .where(eq(difyWorkflowDsl.chatId, chatId));
+
+    return await db
+      .insert(difyWorkflowDsl)
+      .values({
+        chatId,
+        userId,
+        messageId: messageId ?? null,
+        createdAt: new Date(),
+        version: Number(nextVersion ?? 1),
+        workflowName: workflowName ?? null,
+        mode: mode ?? null,
+        dslYaml,
+      })
+      .returning();
+  } catch (_error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to save Dify workflow DSL"
+    );
   }
 }
 
